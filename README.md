@@ -5,9 +5,10 @@ Entries close 2026-11-25T00:00:00Z (07:00 WIB). No entry fee. 0 submissions
 at build time (checked 2026-11-23 ~02:42 WIB).
 
 ## Files
-- `entry.png` — 1024x1024, 134,602 bytes,
-  sha256 5693129fa54e251bd19722d6350e992ac7eab67195390e9bf36fe6779bcead33
-- `draw_poster.py` — poster generator, written from scratch in the build session
+- `entry.png` — 1024x1024, 134,597 bytes,
+  sha256 2b8a5e763fe794ad45d27b22f46be2c6487dd0f0039b4dd06249dbd464a714a5
+- `draw_poster.py` — poster generator, rewritten from scratch in-session
+  2026-11-23 ~07:48 WIB for kit authorship (thinking_reproduces)
 - `main.py` — copies entry.png to /output/entry.png (deterministic; verified
   byte-identical across two runs)
 - `LICENSE` — MIT (from the kit starter)

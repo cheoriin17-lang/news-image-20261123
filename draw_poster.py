@@ -1,242 +1,280 @@
 #!/usr/bin/env python3
-"""Draw the 23 November 2026 world-news front page (1024x1024 PNG).
+"""Render the 23 November 2026 world-news front page (1024x1024 PNG).
 
-Fresh build for make.fun news-image-20261123. Everything is drawn with
-Pillow primitives; no network, no randomness, no external assets.
-Run:  python3 draw_poster.py   ->  writes entry.png next to this file.
+Rewritten from scratch in this session for make.fun news-image-20261123.
+Everything is drawn with Pillow primitives: no network, no randomness,
+no external assets. Deterministic output.
+
+Usage:  python3 draw_poster.py   ->  writes entry.png next to this file.
 """
-import textwrap
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-W = H = 1024
-MARGIN = 38
-PAPER = (248, 243, 232)
-INK = (18, 18, 18)
-RED = (158, 27, 27)
-BLUE = (31, 58, 95)
-GREY = (92, 88, 80)
-RULE = (18, 18, 18)
-HAIR = (178, 172, 158)
+# ---------------------------------------------------------------- page setup
+PAGE = 1024
+PAD = 38
+LEFT = PAD
+RIGHT = PAGE - PAD
+CONTENT_W = RIGHT - LEFT
+
+PAPER = (248, 243, 232)      # warm newsprint
+INK = (18, 18, 18)           # near-black
+RED = (158, 27, 27)          # kicker red
+NAVY = (31, 58, 95)          # globe blue
+BODY = (52, 50, 46)          # body grey-black
+MUTED = (92, 88, 80)         # dateline / footer grey
+HAIRLINE = (178, 172, 158)   # light rule
+GOLD = (232, 196, 90)        # ticker label
+TICKER_BG = INK
 
 FONT_DIR = Path("/usr/share/fonts/truetype/dejavu")
+SERIF_BOLD = "DejaVuSerif-Bold.ttf"
+SERIF_REG = "DejaVuSerif.ttf"
+SANS_BOLD = "DejaVuSans-Bold.ttf"
+SANS_REG = "DejaVuSans.ttf"
+
+# ------------------------------------------------------------------- stories
+DATELINE = "MONDAY  \u00b7  23 NOVEMBER 2026  \u00b7  ONE DAY, ONE PAGE"
+MASTHEAD = "THE DAILY GLOBE"
+TAGLINE = "The world\u2019s news, summed up in a single page"
+
+LEAD_KICKER = "CLIMATE  \u00b7  ANTALYA, T\u00dcRKIYE"
+LEAD_HEAD = ["COP31 COLLAPSES AS", "EU WALKS OUT"]
+LEAD_DECK = (
+    "Nearly 200 nations leave the climate summit with no deal after the "
+    "draft drops every mention of fossil fuels \u2014 the longest UN "
+    "climate talks ever held."
+)
+LEAD_CAPTION = "NO DEAL IN ANTALYA"
+
+# (kicker, headline, body) — two columns, three rows.
+STORIES = [
+    (
+        "GULF WAR WIDENS",
+        "Iran hits US bases in Bahrain; Houthis fire on Saudi Arabia",
+        "Two hurt in Bahrain; Riyadh downs Houthi missiles \u2014 yet "
+        "Tehran says a deal is still possible.",
+    ),
+    (
+        "BALTIC SEA",
+        "Sanctioned Russian freighter burns off Finland",
+        "Sparta II, hit by drones en route to Kaliningrad, is towed from "
+        "Finnish waters; all 16 crew evacuated safely.",
+    ),
+    (
+        "UKRAINE",
+        "14 missing after drone flattens Kyiv flats",
+        "Rescuers dig through rubble near Kyiv after a five-storey block "
+        "is hit; nine people are pulled out alive.",
+    ),
+    (
+        "INDONESIA",
+        "Factory fire near Jakarta kills at least 3",
+        "A candy-plant blaze in Banten traps workers overnight; dozens "
+        "still missing as families wait outside the gates.",
+    ),
+    (
+        "SOUTH KOREA",
+        "Minister quits over AI exam-cheating row",
+        "Education chief Choi Kyo-jin resigns two days before the Suneung "
+        "after anti-cheating measures spark chaos.",
+    ),
+    (
+        "INDIA \u00b7 NEPAL",
+        "Nepal PM begins first visit to Delhi",
+        "Rapper-turned-PM Balendra Shah meets Modi on Monday for talks "
+        "on trade, energy and flood recovery.",
+    ),
+]
+
+TICKER_LABEL = "ALSO TODAY  \u00b7  "
+TICKER_ITEMS = (
+    "WELLINGTON: India post a record 720/9 in the Test against New "
+    "Zealand   \u2022   LONDON: UK and EU agree a post-Brexit reset deal   "
+    "\u2022   DHAKA: Deadly protests over exiled ex-leader"
+)
+
+FOOTER = (
+    "Sources: AP \u00b7 Reuters \u00b7 BBC \u00b7 NPR \u00b7 DW \u00b7 ANI  "
+    "\u2014  All stories dated 22\u201323 November 2026"
+)
 
 
-def font(name, size):
-    return ImageFont.truetype(str(FONT_DIR / name), size)
+# ------------------------------------------------------------------- helpers
+def load_font(filename, size):
+    return ImageFont.truetype(str(FONT_DIR / filename), size)
 
 
-SERIF_B = "DejaVuSerif-Bold.ttf"
-SERIF = "DejaVuSerif.ttf"
-SANS_B = "DejaVuSans-Bold.ttf"
-SANS = "DejaVuSans.ttf"
-
-
-def wrap(draw, text, fnt, width):
-    """Greedy word wrap returning lines that fit `width` pixels."""
-    lines = []
-    for chunk in text.split("\n"):
-        words, cur = chunk.split(), ""
-        for w in words:
-            trial = (cur + " " + w).strip()
-            if draw.textlength(trial, font=fnt) <= width or not cur:
-                cur = trial
+def wrap_text(draw, text, font, max_width):
+    """Greedy word wrap; returns a list of lines fitting max_width px."""
+    out = []
+    for paragraph in text.split("\n"):
+        words = paragraph.split()
+        current = ""
+        for word in words:
+            trial = f"{current} {word}".strip()
+            if not current or draw.textlength(trial, font=font) <= max_width:
+                current = trial
             else:
-                lines.append(cur)
-                cur = w
-        if cur:
-            lines.append(cur)
-    return lines
+                out.append(current)
+                current = word
+        if current:
+            out.append(current)
+    return out
 
 
-def fit_lines(draw, text, fnt, width, max_lines):
-    """Wrap text; shrink the font until it fits in max_lines at width."""
-    size = fnt.size
-    while size > 10:
-        f = font(fnt.path.split("/")[-1], size) if hasattr(fnt, "path") else fnt
-        ls = wrap(draw, text, f, width)
-        if len(ls) <= max_lines:
-            return f, ls
-        size -= 1
-    return f, ls
+class FrontPage:
+    """A newspaper front page drawn top to bottom with a moving cursor."""
 
+    def __init__(self):
+        self.image = Image.new("RGB", (PAGE, PAGE), PAPER)
+        self.draw = ImageDraw.Draw(self.image)
+        self.y = 0  # cursor: top of the next block
 
-def hline(draw, x0, x1, y, width=1, color=RULE):
-    draw.line([(x0, y), (x1, y)], fill=color, width=width)
+    # -- generic drawing -------------------------------------------------
+    def rule(self, y, weight=1, colour=INK, x0=LEFT, x1=RIGHT):
+        self.draw.line([(x0, y), (x1, y)], fill=colour, width=weight)
 
+    def centred(self, text, y, font, colour=INK):
+        width = self.draw.textlength(text, font=font)
+        self.draw.text(((PAGE - width) / 2, y), text, font=font, fill=colour)
 
-def draw_globe(draw, cx, cy, r, color=INK):
-    """Simple line globe: circle, meridians, equator."""
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=3)
-    draw.ellipse([cx - r // 2, cy - r, cx + r // 2, cy + r], outline=color, width=2)
-    draw.line([(cx - r, cy), (cx + r, cy)], fill=color, width=2)
-    draw.arc([cx - r, cy - r // 2, cx + r, cy + r // 2], 200, 340, fill=color, width=2)
-    draw.arc([cx - r, cy - r // 2, cx + r, cy + r // 2], 20, 160, fill=color, width=2)
+    def globe(self, cx, cy, radius, colour=INK, weight=3):
+        d = self.draw
+        d.ellipse([cx - radius, cy - radius, cx + radius, cy + radius],
+                  outline=colour, width=weight)
+        d.ellipse([cx - radius // 2, cy - radius,
+                   cx + radius // 2, cy + radius], outline=colour, width=2)
+        d.line([(cx - radius, cy), (cx + radius, cy)], fill=colour, width=2)
+        box = [cx - radius, cy - radius // 2, cx + radius, cy + radius // 2]
+        d.arc(box, 200, 340, fill=colour, width=2)
+        d.arc(box, 20, 160, fill=colour, width=2)
 
+    # -- sections --------------------------------------------------------
+    def masthead(self):
+        self.y = 30
+        self.centred(DATELINE, self.y, load_font(SANS_BOLD, 15), MUTED)
+        title_font = load_font(SERIF_BOLD, 72)
+        title_y = self.y + 34
+        self.globe(LEFT + 34, title_y + 48, 30)
+        self.globe(RIGHT - 34, title_y + 48, 30)
+        self.centred(MASTHEAD, title_y, title_font)
+        self.centred(TAGLINE, self.y + 118, load_font(SERIF_REG, 19), MUTED)
+        rule_y = self.y + 152
+        self.rule(rule_y, weight=4)
+        self.rule(rule_y + 8, weight=1)
+        self.y = rule_y + 16
 
-def masthead(draw):
-    top = 30
-    f_small = font(SANS_B, 15)
-    dateline = "MONDAY  \u00b7  23 NOVEMBER 2026  \u00b7  ONE DAY, ONE PAGE"
-    tw = draw.textlength(dateline, font=f_small)
-    draw.text(((W - tw) / 2, top), dateline, font=f_small, fill=GREY)
+    def lead_story(self):
+        top = self.y
+        text_width = 640
+        self.draw.text((LEFT, top), LEAD_KICKER,
+                       font=load_font(SANS_BOLD, 17), fill=RED)
+        head_font = load_font(SERIF_BOLD, 54)
+        hy = top + 30
+        for line in LEAD_HEAD:
+            self.draw.text((LEFT, hy), line, font=head_font, fill=INK)
+            hy += 62
+        deck_font = load_font(SANS_REG, 21)
+        dy = hy + 6
+        for line in wrap_text(self.draw, LEAD_DECK, deck_font, text_width):
+            self.draw.text((LEFT, dy), line, font=deck_font, fill=INK)
+            dy += 28
 
-    title_f = font(SERIF_B, 72)
-    title = "THE DAILY GLOBE"
-    tw = draw.textlength(title, font=title_f)
-    draw_globe(draw, MARGIN + 34, top + 78, 30)
-    draw.text(((W - tw) / 2, top + 34), title, font=title_f, fill=INK)
-    draw_globe(draw, W - MARGIN - 34, top + 78, 30)
+        # Cracked-globe motif to the right of the lead text.
+        cx, cy, r = 830, 300, 72
+        d = self.draw
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=NAVY, width=4)
+        d.ellipse([cx - r // 2, cy - r, cx + r // 2, cy + r],
+                  outline=NAVY, width=2)
+        d.line([(cx - r, cy), (cx + r, cy)], fill=NAVY, width=2)
+        crack = [(cx - 18, cy - r + 8), (cx + 6, cy - 34), (cx - 12, cy + 2),
+                 (cx + 14, cy + 30), (cx - 4, cy + r - 10)]
+        d.line(crack, fill=RED, width=4, joint="curve")
+        caption_font = load_font(SANS_BOLD, 13)
+        caption_w = self.draw.textlength(LEAD_CAPTION, font=caption_font)
+        self.draw.text((cx - caption_w / 2, cy + r + 12), LEAD_CAPTION,
+                       font=caption_font, fill=RED)
+        self.y = 444
 
-    tag_f = font(SERIF, 19)
-    tag = "The world\u2019s news, summed up in a single page"
-    tw = draw.textlength(tag, font=tag_f)
-    draw.text(((W - tw) / 2, top + 118), tag, font=tag_f, fill=GREY)
+    def story_card(self, x, y, width, kicker, headline, body):
+        d = self.draw
+        d.text((x, y), kicker, font=load_font(SANS_BOLD, 15), fill=RED)
+        hy = y + 24
+        # Shrink the headline until it fits in two lines.
+        size = 25
+        while size > 12:
+            head_font = load_font(SERIF_BOLD, size)
+            lines = wrap_text(d, headline, head_font, width)
+            if len(lines) <= 2:
+                break
+            size -= 1
+        for line in lines:
+            d.text((x, hy), line, font=head_font, fill=INK)
+            hy += 30
+        body_font = load_font(SANS_REG, 16)
+        by = hy + 2
+        for line in wrap_text(d, body, body_font, width)[:3]:
+            d.text((x, by), line, font=body_font, fill=BODY)
+            by += 21
+        return by
 
-    y = top + 152
-    hline(draw, MARGIN, W - MARGIN, y, width=4)
-    hline(draw, MARGIN, W - MARGIN, y + 8, width=1)
-    return y + 16
+    def story_grid(self):
+        y0 = self.y + 8
+        gutter = 28
+        col_w = (CONTENT_W - gutter) // 2
+        divider_x = LEFT + col_w + gutter // 2
+        row_h = 154
+        for index, (kicker, headline, body) in enumerate(STORIES):
+            row, col = divmod(index, 2)
+            x = LEFT if col == 0 else divider_x + gutter // 2
+            cy = y0 + row * row_h
+            if row > 0:
+                self.rule(cy - 12, weight=1, colour=HAIRLINE)
+            self.story_card(x, cy, col_w, kicker, headline, body)
+        bottom = y0 + 3 * row_h
+        self.rule(bottom - 12, weight=1, colour=HAIRLINE)
+        self.draw.line([(divider_x, y0), (divider_x, bottom - 24)],
+                       fill=HAIRLINE, width=1)
+        self.y = bottom
 
+    def ticker_strip(self):
+        top = self.y + 6
+        height = 64
+        self.draw.rectangle([LEFT, top, RIGHT, top + height], fill=TICKER_BG)
+        label_font = load_font(SANS_BOLD, 15)
+        self.draw.text((LEFT + 14, top + 22), TICKER_LABEL,
+                       font=label_font, fill=GOLD)
+        label_w = self.draw.textlength(TICKER_LABEL, font=label_font)
+        text_font = load_font(SANS_REG, 16)
+        lines = wrap_text(self.draw, TICKER_ITEMS, text_font,
+                          RIGHT - (LEFT + 14 + label_w) - 14)
+        ty = top + 12 if len(lines) > 1 else top + 22
+        for line in lines[:2]:
+            self.draw.text((LEFT + 14 + label_w, ty), line,
+                           font=text_font, fill=PAPER)
+            ty += 21
+        self.y = top + height + 14
 
-def lead(draw, y):
-    """Lead story: COP31 collapse, with a cracked-globe motif on the right."""
-    x0, x1 = MARGIN, W - MARGIN
-    text_w = 640
-    f_kick = font(SANS_B, 17)
-    draw.text((x0, y), "CLIMATE  \u00b7  ANTALYA, T\u00dcRKIYE", font=f_kick, fill=RED)
-    y += 30
+    def footer(self):
+        self.rule(self.y - 8, weight=1, colour=HAIRLINE)
+        self.centred(FOOTER, self.y + 2, load_font(SANS_REG, 13), MUTED)
 
-    f_head = font(SERIF_B, 54)
-    head = "COP31 COLLAPSES AS\nEU WALKS OUT"
-    for line in head.split("\n"):
-        draw.text((x0, y), line, font=f_head, fill=INK)
-        y += 62
-    y += 6
-
-    f_deck = font(SANS, 21)
-    deck = ("Nearly 200 nations leave the climate summit with no deal "
-            "after the draft drops every mention of fossil fuels \u2014 "
-            "the longest UN climate talks ever held.")
-    for line in wrap(draw, deck, f_deck, text_w):
-        draw.text((x0, y), line, font=f_deck, fill=INK)
-        y += 28
-
-    # Cracked globe motif, right of the lead text.
-    cx, cy, r = 830, 300, 72
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=BLUE, width=4)
-    draw.ellipse([cx - r // 2, cy - r, cx + r // 2, cy + r], outline=BLUE, width=2)
-    draw.line([(cx - r, cy), (cx + r, cy)], fill=BLUE, width=2)
-    crack = [(cx - 18, cy - r + 8), (cx + 6, cy - 34), (cx - 12, cy + 2),
-             (cx + 14, cy + 30), (cx - 4, cy + r - 10)]
-    draw.line(crack, fill=RED, width=4, joint="curve")
-    f_cap = font(SANS_B, 13)
-    cap = "NO DEAL IN ANTALYA"
-    tw = draw.textlength(cap, font=f_cap)
-    draw.text((cx - tw / 2, cy + r + 12), cap, font=f_cap, fill=RED)
-    return 444
-
-
-def card(draw, x, y, w, kicker, headline, body):
-    f_kick = font(SANS_B, 15)
-    draw.text((x, y), kicker, font=f_kick, fill=RED)
-    y += 24
-    f_head, lines = fit_lines(draw, headline, font(SERIF_B, 25), w, 2)
-    for line in lines:
-        draw.text((x, y), line, font=f_head, fill=INK)
-        y += 30
-    y += 2
-    f_body = font(SANS, 16)
-    for line in wrap(draw, body, f_body, w)[:3]:
-        draw.text((x, y), line, font=f_body, fill=(52, 50, 46))
-        y += 21
-    return y
-
-
-def grid(draw, y0):
-    x0, x1 = MARGIN, W - MARGIN
-    col_w = (x1 - x0 - 28) // 2
-    mid = x0 + col_w + 14
-    stories = [
-        ("GULF WAR WIDENS",
-         "Iran hits US bases in Bahrain; Houthis fire on Saudi Arabia",
-         "Two hurt in Bahrain; Riyadh downs Houthi missiles \u2014 yet "
-         "Tehran says a deal is still possible."),
-        ("BALTIC SEA",
-         "Sanctioned Russian freighter burns off Finland",
-         "Sparta II, hit by drones en route to Kaliningrad, is towed from "
-         "Finnish waters; all 16 crew evacuated safely."),
-        ("UKRAINE",
-         "14 missing after drone flattens Kyiv flats",
-         "Rescuers dig through rubble near Kyiv after a five-storey block "
-         "is hit; nine people are pulled out alive."),
-        ("INDONESIA",
-         "Factory fire near Jakarta kills at least 3",
-         "A candy-plant blaze in Banten traps workers overnight; dozens "
-         "still missing as families wait outside the gates."),
-        ("SOUTH KOREA",
-         "Minister quits over AI exam-cheating row",
-         "Education chief Choi Kyo-jin resigns two days before the Suneung "
-         "after anti-cheating measures spark chaos."),
-        ("INDIA \u00b7 NEPAL",
-         "Nepal PM begins first visit to Delhi",
-         "Rapper-turned-PM Balendra Shah meets Modi on Monday for talks "
-         "on trade, energy and flood recovery."),
-    ]
-    row_h = 154
-    for i, (kick, head, body) in enumerate(stories):
-        row, col = divmod(i, 2)
-        cx = x0 if col == 0 else mid
-        cy = y0 + row * row_h
-        if row > 0:
-            hline(draw, x0, x1, cy - 12, width=1, color=HAIR)
-        card(draw, cx, cy, col_w, kick, head, body)
-    hline(draw, x0, x1, y0 + 3 * row_h - 12, width=1, color=HAIR)
-    draw.line([(mid - 14, y0), (mid - 14, y0 + 3 * row_h - 24)],
-              fill=HAIR, width=1)
-    return y0 + 3 * row_h
-
-
-def ticker(draw, y):
-    x0, x1 = MARGIN, W - MARGIN
-    h = 64
-    draw.rectangle([x0, y, x1, y + h], fill=INK)
-    f_lab = font(SANS_B, 15)
-    label = "ALSO TODAY  \u00b7  "
-    draw.text((x0 + 14, y + 22), label, font=f_lab, fill=(232, 196, 90))
-    lx = x0 + 14 + draw.textlength(label, font=f_lab)
-    f_t = font(SANS, 16)
-    items = ("WELLINGTON: India post a record 720/9 in the Test against "
-             "New Zealand   \u2022   LONDON: UK and EU agree a post-Brexit "
-             "reset deal   \u2022   DHAKA: Deadly protests over exiled ex-leader")
-    lines = wrap(draw, items, f_t, x1 - lx - 14)
-    ty = y + 12 if len(lines) > 1 else y + 22
-    for line in lines[:2]:
-        draw.text((lx, ty), line, font=f_t, fill=(248, 243, 232))
-        ty += 21
-    return y + h + 14
-
-
-def footer(draw, y):
-    f_f = font(SANS, 13)
-    note = ("Sources: AP \u00b7 Reuters \u00b7 BBC \u00b7 NPR \u00b7 DW \u00b7 ANI  \u2014  "
-            "All stories dated 22\u201323 November 2026")
-    tw = draw.textlength(note, font=f_f)
-    draw.text(((W - tw) / 2, y), note, font=f_f, fill=GREY)
-    hline(draw, MARGIN, W - MARGIN, y - 8, width=1, color=HAIR)
+    def render(self):
+        self.masthead()
+        self.lead_story()
+        self.story_grid()
+        self.ticker_strip()
+        self.footer()
+        return self.image
 
 
 def main():
-    img = Image.new("RGB", (W, H), PAPER)
-    draw = ImageDraw.Draw(img)
-    y = masthead(draw)
-    y = lead(draw, y)
-    y = grid(draw, y + 8)
-    y = ticker(draw, y + 6)
-    footer(draw, y + 2)
+    page = FrontPage()
+    image = page.render()
     out = Path(__file__).resolve().parent / "entry.png"
-    img.save(out, format="PNG", optimize=True)
+    image.save(out, format="PNG", optimize=True)
     print(f"wrote {out} ({out.stat().st_size} bytes)")
 
 
